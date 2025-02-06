@@ -1,0 +1,27 @@
+{
+  "name": "psfcmobileappbackend",
+  "version": "1.0.0",
+  "description": "Scraper for PSFC Mobile APP",
+  "main": "index.js",
+  "scripts": {
+    "start": "node dist/server.js",
+    "dev": "ts-node src/server.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "Ted Gusek",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "puppeteer": "^24.2.0",
+    "puppeteer-core": "^24.2.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.1",
+    "install": "^0.13.0",
+    "npm": "^11.1.0",
+    "typescript": "^5.7.3"
+  }
+}
