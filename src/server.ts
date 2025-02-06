@@ -83,7 +83,6 @@ async function scrapeShifts(): Promise<void> {
 
   console.log('✅ Shifts scraped:', shiftsData);
 }
-console.log('Acraped Array', shiftsData);
 
 // 🔹 Schedule Scraping Every 60 Seconds
 async function startScraping() {
