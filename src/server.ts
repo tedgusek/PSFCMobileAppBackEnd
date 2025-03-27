@@ -28,11 +28,11 @@ async function initBrowser() {
   });
   page = await browser.newPage();
 
-  if (fs.existsSync(SESSION_FILE)) {
-    const cookies = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
-    await page.setCookie(...cookies);
-    console.log('✅ Session restored from file');
-  }
+  // if (fs.existsSync(SESSION_FILE)) {
+  //   const cookies = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf-8'));
+  //   await page.setCookie(...cookies);
+  //   console.log('✅ Session restored from file');
+  // }
 }
 
 // 🔹 Login Function
@@ -71,27 +71,114 @@ async function scrapeShifts(): Promise<void> {
     waitUntil: 'domcontentloaded',
   });
 
-  shiftsData = await page.evaluate(() => {
-    return Array.from(document.querySelectorAll('a.shift')).map((shift) => ({
-      time: shift.querySelector('b')?.textContent?.trim() || 'Unknown',
-      description:
-        shift.textContent
-          ?.replace(shift.querySelector('b')?.textContent || '', '')
-          .trim() || 'Unknown',
-    }));
-  });
+  // Check if we got logged out
+  if ((await page.title()) === 'Login - Food Coop') {
+    console.log('⚠️ Session expired, re-logging in...');
+    await login(); // Re-login if redirected to login page
+    await scrapeShifts(); // Retry scraping after login
+    return;
+  }
 
-  console.log('✅ Shifts scraped:', shiftsData);
+  // shiftsData = await page.evaluate(() => {
+  //   return Array.from(document.querySelectorAll('a.shift')).map((shift) => ({
+  //     time: shift.querySelector('b')?.textContent?.trim() || 'Unknown',
+  //     description:
+  //       shift.textContent
+  //         ?.replace(shift.querySelector('b')?.textContent || '', '')
+  //         .trim() || 'Unknown',
+  //   }));
+  // });
+
+  // shiftsData = await page.evaluate(() => {
+  //   return Array.from(document.querySelectorAll('.col')).flatMap((col) => {
+  //     const date =
+  //       col.querySelector('b')?.textContent?.trim() || 'Unknown Date';
+
+  //     return Array.from(col.querySelectorAll('a.shift')).map((shift) => ({
+  //       date, // Attach the extracted date
+  //       time: shift.querySelector('b')?.textContent?.trim() || 'Unknown',
+  //       description:
+  //         shift.textContent
+  //           ?.replace(shift.querySelector('b')?.textContent || '', '')
+  //           .trim() || 'Unknown',
+  //     }));
+  //   });
+  // });
+
+  let shiftsData: Record<string, { time: string; description: string }[]> = {}; // Store shifts by date
+
+  while (true) {
+    console.log('🔍 Scraping shifts from:', page.url());
+
+    // Extract shifts grouped by date
+    const pageShifts = await page.evaluate(() => {
+      const shiftsByDate: Record<
+        string,
+        { time: string; description: string }[]
+      > = {};
+
+      document.querySelectorAll('.col').forEach((col) => {
+        const date =
+          col.querySelector('b')?.textContent?.trim() || 'Unknown Date';
+
+        const shifts = Array.from(col.querySelectorAll('a.shift')).map(
+          (shift) => ({
+            time: shift.querySelector('b')?.textContent?.trim() || 'Unknown',
+            description:
+              shift.textContent
+                ?.replace(shift.querySelector('b')?.textContent || '', '')
+                .trim() || 'Unknown',
+          })
+        );
+
+        if (shifts.length > 0) {
+          shiftsByDate[date] = shifts;
+        }
+      });
+
+      return shiftsByDate;
+    });
+
+    // Merge page shifts into main shiftsData
+    for (const [date, shifts] of Object.entries(pageShifts)) {
+      if (!shiftsData[date]) {
+        shiftsData[date] = [];
+      }
+      shiftsData[date].push(...shifts);
+    }
+
+    // Check if there's a "Next Week" link
+    const nextWeekHref = await page.evaluate(() => {
+      const nextWeekLink = Array.from(document.querySelectorAll('a')).find(
+        (a) => a.textContent?.trim().startsWith('Next Week')
+      );
+      return nextWeekLink ? nextWeekLink.getAttribute('href') : null;
+    });
+
+    if (nextWeekHref) {
+      console.log(`➡️ Moving to the next page: ${nextWeekHref}`);
+      await page.goto(`https://members.foodcoop.com${nextWeekHref}`, {
+        waitUntil: 'domcontentloaded',
+      });
+    } else {
+      console.log('✅ No more pages to scrape.');
+      break;
+    }
+  }
+
+  console.log('✅ All shifts scraped:', shiftsData);
 }
 
 // 🔹 Schedule Scraping Every 60 Seconds
 async function startScraping() {
   await initBrowser();
+  await login();
   if (!fs.existsSync(SESSION_FILE)) {
     await login();
   }
   await scrapeShifts();
-  setInterval(scrapeShifts, 60000);
+  // setInterval(scrapeShifts, 60000);
+  // setInterval(scrapeShifts, 5000);
 }
 
 // 🔹 API Endpoint to Get Scraped Shifts
