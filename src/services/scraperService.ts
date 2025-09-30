@@ -21,6 +21,7 @@ export async function login() {
   const cookies = await page.cookies();
   fs.writeFileSync(config.SESSION_FILE, JSON.stringify(cookies));
   console.log('✅ Login successful & session saved');
+  // scrapeShifts();
 }
 
 export async function scrapeShifts() {
@@ -93,6 +94,6 @@ export async function scrapeShifts() {
     }
   }
 
-  console.log('✅ All shifts scraped:', shiftsData);
+  // console.log('✅ All shifts scraped:', shiftsData);
   return shiftsData;
 }
