@@ -1,6 +1,5 @@
 FROM node:20-slim
 
-# Install Chromium and dependencies for Puppeteer
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
@@ -21,7 +20,6 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Tell Puppeteer to use the installed Chromium instead of downloading its own
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
@@ -33,15 +31,8 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+RUN npm prune --production
+
 EXPOSE 3030
 
 CMD ["npm", "start"]
-```
-
-Also create a `.dockerignore` file in the same folder:
-```
-node_modules
-dist
-.git
-.ENV
-*.log
