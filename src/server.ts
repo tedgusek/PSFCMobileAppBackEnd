@@ -9,6 +9,11 @@ import { setCachedShifts, getCachedShifts } from './services/cached';
 
 const app = express();
 app.use(express.json());
+
+// ─── Health check — must respond instantly so Fly proxy sees the port ─────────
+// This is checked by Fly before traffic is routed to the machine.
+app.get('/health', (_req: any, res: any) => res.json({ status: 'ok' }));
+
 app.use('/api', shiftsRouter);
 
 // ─── Adaptive Polling ─────────────────────────────────────────────────────────
@@ -42,7 +47,6 @@ async function scrapeAndDetectChanges(): Promise<void> {
       }
     }
     if (disappeared.length > 0 && disappeared.length < 50) {
-      // Only log if it's a plausible number — large numbers = stale cache diff
       console.log(`⚠️  ${disappeared.length} shift(s) taken externally`);
     }
 
@@ -83,25 +87,35 @@ async function startWithRetry(retries = 3, delayMs = 5000): Promise<void> {
       const data = await scrapeShifts();
       setCachedShifts(data);
       console.log('✅ Initial shift data scraped and cached');
-      return; // Success
+      return;
     } catch (err: any) {
       console.error(`❌ Startup attempt ${attempt} failed:`, err.message);
       if (attempt < retries) {
         console.log(`⏳ Retrying in ${delayMs / 1000}s...`);
         await new Promise((r) => setTimeout(r, delayMs));
       } else {
-        console.error(
-          '❌ All startup attempts failed. Server will run but shifts unavailable until restart.',
-        );
+        console.error('❌ All startup attempts failed.');
       }
     }
   }
 }
 
-app.listen(config.PORT, async () => {
-  console.log(`🚀 Server running on http://localhost:${config.PORT}`);
-  await startWithRetry();
-  schedulePoll(NORMAL_INTERVAL_MS);
+// ─── Start server FIRST so Fly proxy sees port 3030 immediately ───────────────
+// Browser init is slow (~30s) — if we await it before listening, Fly thinks
+// the machine is unhealthy and kills it before Chromium even starts.
+
+const PORT = Number(config.PORT) || 3030;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+
+  // Initialize browser in background — don't block the listening port
+  startWithRetry()
+    .then(() => {
+      schedulePoll(NORMAL_INTERVAL_MS);
+    })
+    .catch((err) => {
+      console.error('❌ Background startup error:', err.message);
+    });
 });
 
 // ─── DB health check ──────────────────────────────────────────────────────────
