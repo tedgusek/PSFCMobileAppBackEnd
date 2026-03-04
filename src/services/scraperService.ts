@@ -3,7 +3,7 @@ import { getPage } from './browser';
 export interface Shift {
   time: string;
   description: string;
-  href: string; // The relative URL of the shift link e.g. "/services/shifts/signup/?id=12345"
+  href: string;
 }
 
 export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
@@ -33,11 +33,13 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
         const shifts = Array.from(col.querySelectorAll('a.shift')).map(
           (shift) => ({
             time: shift.querySelector('b')?.textContent?.trim() || 'Unknown',
-            description:
-              shift.textContent
-                ?.replace(shift.querySelector('b')?.textContent || '', '')
-                .trim() || 'Unknown',
-            href: shift.getAttribute('href') || '', // ← Capture the signup link
+            // Clean up description — strip emojis artifacts, extra whitespace
+            description: (shift.textContent || '')
+              .replace(shift.querySelector('b')?.textContent || '', '')
+              .replace(/\s+/g, ' ')
+              .trim(),
+            // Trim whitespace from href — the site has leading/trailing spaces
+            href: (shift.getAttribute('href') || '').trim(),
           }),
         );
 
@@ -54,15 +56,18 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
       shiftsData[date].push(...shifts);
     }
 
+    // Check for a "Next Week" navigation link
     const nextWeekHref = await page.evaluate(() => {
       const nextWeekLink = Array.from(document.querySelectorAll('a')).find(
         (a) => a.textContent?.trim().startsWith('Next Week'),
       );
-      return nextWeekLink ? nextWeekLink.getAttribute('href') : null;
+      return nextWeekLink
+        ? (nextWeekLink.getAttribute('href') || '').trim()
+        : null;
     });
 
     if (nextWeekHref) {
-      console.log(`➡️ Moving to the next page: ${nextWeekHref}`);
+      console.log(`➡️ Moving to next week: ${nextWeekHref}`);
       await page.goto(`https://members.foodcoop.com${nextWeekHref}`, {
         waitUntil: 'domcontentloaded',
       });
@@ -72,5 +77,21 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
     }
   }
 
-  return shiftsData;
+  // Sort dates chronologically before returning
+  // Date strings from the site look like "Thu 3/5/2026"
+  const sorted: Record<string, Shift[]> = {};
+  const sortedKeys = Object.keys(shiftsData).sort((a, b) => {
+    const parseDate = (d: string) => {
+      // Strip the day-of-week prefix e.g. "Thu " → "3/5/2026"
+      const datePart = d.replace(/^[A-Za-z]+\s+/, '');
+      return new Date(datePart).getTime();
+    };
+    return parseDate(a) - parseDate(b);
+  });
+
+  for (const key of sortedKeys) {
+    sorted[key] = shiftsData[key];
+  }
+
+  return sorted;
 }
