@@ -13,19 +13,15 @@ app.use('/api', shiftsRouter);
 
 // ─── Adaptive Polling ────────────────────────────────────────────────────────
 
-const NORMAL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes during quiet periods
-const FAST_INTERVAL_MS = 30 * 1000; // 30 seconds right after a signup
+const NORMAL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const FAST_INTERVAL_MS = 30 * 1000; // 30 seconds after a signup
 
 let pollTimer: NodeJS.Timeout | null = null;
-let isScrapingLocked = false; // Prevents overlapping scrape runs
+let isScrapingLocked = false;
 
-/**
- * Scrapes the site, diffs against the previous cache, and logs any
- * shifts that disappeared (i.e. were taken by someone outside the app).
- */
 async function scrapeAndDetectChanges(): Promise<void> {
   if (isScrapingLocked) {
-    console.log('⏳ Scrape already in progress, skipping this tick');
+    console.log('⏳ Scrape already running, skipping this tick');
     return;
   }
 
@@ -35,19 +31,15 @@ async function scrapeAndDetectChanges(): Promise<void> {
     const previous = getCachedShifts();
     const current = await scrapeShifts();
 
-    // ── Diff: find shifts that existed before but are gone now ──
+    // Diff — find shifts that disappeared since last scrape
     const disappeared: { date: string; time: string; description: string }[] =
       [];
-
     for (const [date, prevShifts] of Object.entries(previous)) {
-      const currShifts = current[date] ?? [];
       const currKeys = new Set(
-        currShifts.map((s) => `${s.time}|${s.description}`),
+        (current[date] ?? []).map((s) => `${s.time}|${s.description}`),
       );
-
       for (const shift of prevShifts) {
-        const key = `${shift.time}|${shift.description}`;
-        if (!currKeys.has(key)) {
+        if (!currKeys.has(`${shift.time}|${shift.description}`)) {
           disappeared.push({ date, ...shift });
         }
       }
@@ -58,42 +50,37 @@ async function scrapeAndDetectChanges(): Promise<void> {
         `⚠️  ${disappeared.length} shift(s) were taken externally:`,
         disappeared,
       );
-      // TODO: When you add push notifications, call notifyAffectedUsers(disappeared) here
     }
 
     setCachedShifts(current);
     console.log('🔄 Shift cache updated');
-  } catch (err) {
-    console.error('❌ Failed to scrape shifts:', err);
+  } catch (err: any) {
+    if (err.message === 'SIGNUP_IN_PROGRESS') {
+      console.log(
+        '⏸️  Scrape skipped — signup in progress, will retry at next interval',
+      );
+    } else {
+      console.error('❌ Failed to scrape shifts:', err);
+    }
   } finally {
     isScrapingLocked = false;
   }
 }
 
-/**
- * Schedules the next scrape after `delay` ms.
- * Always clears any existing timer first so there's never two running at once.
- */
 function schedulePoll(delay: number): void {
   if (pollTimer) clearTimeout(pollTimer);
-
   pollTimer = setTimeout(async () => {
     await scrapeAndDetectChanges();
-    schedulePoll(NORMAL_INTERVAL_MS); // Always return to normal cadence after each run
+    schedulePoll(NORMAL_INTERVAL_MS);
   }, delay);
 }
 
-/**
- * Call this from the /api/shifts/claim route immediately after a successful
- * signup. It cancels the current timer and fires a fresh scrape in 30 seconds
- * so the cache reflects the change almost immediately.
- */
 export function triggerImmediateRescrape(): void {
-  console.log('⚡ Signup detected — scheduling fast rescrape in 30 seconds');
+  console.log('⚡ Signup completed — scheduling fast rescrape in 30s');
   schedulePoll(FAST_INTERVAL_MS);
 }
 
-// ─── Startup ─────────────────────────────────────────────────────────────────
+// ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function startScraping(): Promise<void> {
   await initBrowser();
@@ -105,16 +92,15 @@ async function startScraping(): Promise<void> {
 
 app.listen(config.PORT, async () => {
   console.log(`🚀 Server running on http://localhost:${config.PORT}`);
-
   try {
     await startScraping();
-    schedulePoll(NORMAL_INTERVAL_MS); // Kick off the adaptive polling loop
+    schedulePoll(NORMAL_INTERVAL_MS);
   } catch (error) {
     console.error('❌ Error initializing scraper:', error);
   }
 });
 
-// ─── DB health check ─────────────────────────────────────────────────────────
+// ─── DB health check ──────────────────────────────────────────────────────────
 
 async function testDb(): Promise<void> {
   try {
@@ -126,7 +112,7 @@ async function testDb(): Promise<void> {
 }
 testDb();
 
-// ─── Graceful shutdown ───────────────────────────────────────────────────────
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
 
 process.on('SIGINT', async () => {
   if (pollTimer) clearTimeout(pollTimer);

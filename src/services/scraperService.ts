@@ -1,4 +1,4 @@
-import { getPage } from './browser';
+import { getScrapePage, isSignupInProgress } from './browser';
 
 export interface Shift {
   time: string;
@@ -7,8 +7,14 @@ export interface Shift {
 }
 
 export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
-  const page = getPage();
-  if (!page) throw new Error('Browser not initialized');
+  // Don't scrape while a signup is in progress — it uses a different page
+  // but we still want to avoid a noisy diff right after a signup completes
+  if (isSignupInProgress()) {
+    console.log('⏸️  Scrape skipped — signup in progress');
+    throw new Error('SIGNUP_IN_PROGRESS');
+  }
+
+  const page = getScrapePage();
 
   console.log('🔍 Scraping shifts...');
   await page.goto('https://members.foodcoop.com/services/shifts', {
@@ -33,12 +39,10 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
         const shifts = Array.from(col.querySelectorAll('a.shift')).map(
           (shift) => ({
             time: shift.querySelector('b')?.textContent?.trim() || 'Unknown',
-            // Clean up description — strip emojis artifacts, extra whitespace
             description: (shift.textContent || '')
               .replace(shift.querySelector('b')?.textContent || '', '')
               .replace(/\s+/g, ' ')
               .trim(),
-            // Trim whitespace from href — the site has leading/trailing spaces
             href: (shift.getAttribute('href') || '').trim(),
           }),
         );
@@ -56,7 +60,6 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
       shiftsData[date].push(...shifts);
     }
 
-    // Check for a "Next Week" navigation link
     const nextWeekHref = await page.evaluate(() => {
       const nextWeekLink = Array.from(document.querySelectorAll('a')).find(
         (a) => a.textContent?.trim().startsWith('Next Week'),
@@ -77,18 +80,15 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
     }
   }
 
-  // Sort dates chronologically before returning
-  // Date strings from the site look like "Thu 3/5/2026"
+  // Sort dates chronologically
   const sorted: Record<string, Shift[]> = {};
   const sortedKeys = Object.keys(shiftsData).sort((a, b) => {
     const parseDate = (d: string) => {
-      // Strip the day-of-week prefix e.g. "Thu " → "3/5/2026"
       const datePart = d.replace(/^[A-Za-z]+\s+/, '');
       return new Date(datePart).getTime();
     };
     return parseDate(a) - parseDate(b);
   });
-
   for (const key of sortedKeys) {
     sorted[key] = shiftsData[key];
   }
