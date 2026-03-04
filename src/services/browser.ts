@@ -1,59 +1,58 @@
 import puppeteer, { Browser, Page } from 'puppeteer';
 
 let browser: Browser | null = null;
-let scrapePage: Page | null = null; // Dedicated page for scraping
-let signupPage: Page | null = null; // Dedicated page for signups
-
-// Mutex — prevents scraper from navigating while a signup is in progress
+let scrapePage: Page | null = null;
+let signupPage: Page | null = null;
 let signupInProgress = false;
-
-const LAUNCH_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-gpu',
-  '--disable-dev-shm-usage',
-  '--single-process',
-];
 
 export async function initBrowser(): Promise<void> {
   browser = await puppeteer.launch({
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: LAUNCH_ARGS,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--single-process', // Critical for Fly.io Firecracker VMs
+      '--no-zygote', // Prevents fork issues in constrained envs
+    ],
+    timeout: 60000, // Give Chromium 60s to start
   });
 
-  // Open two separate pages so scraping and signup never share state
   scrapePage = await browser.newPage();
   signupPage = await browser.newPage();
+
+  // Set a realistic user agent so the site doesn't block headless browsers
+  const UA =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  await scrapePage.setUserAgent(UA);
+  await signupPage.setUserAgent(UA);
 
   console.log('🌐 Browser initialized with dedicated scrape + signup pages');
 }
 
-/** Returns the scraping page. Throws if a signup is currently in progress. */
 export function getScrapePage(): Page {
   if (!scrapePage) throw new Error('Browser not initialized');
   return scrapePage;
 }
 
-/** Returns the dedicated signup page — never used for scraping. */
 export function getSignupPage(): Page {
   if (!signupPage) throw new Error('Browser not initialized');
   return signupPage;
 }
 
-/** Call before starting a signup to block the scraper from interfering. */
 export function lockForSignup(): void {
   signupInProgress = true;
-  console.log('🔒 Signup lock acquired — scraper will wait');
+  console.log('🔒 Signup lock acquired');
 }
 
-/** Call when signup is complete (success or failure) to release the scraper. */
 export function releaseSignupLock(): void {
   signupInProgress = false;
-  console.log('🔓 Signup lock released — scraper can resume');
+  console.log('🔓 Signup lock released');
 }
 
-/** Returns true if a signup is currently in progress. */
 export function isSignupInProgress(): boolean {
   return signupInProgress;
 }

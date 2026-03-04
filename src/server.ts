@@ -11,27 +11,24 @@ const app = express();
 app.use(express.json());
 app.use('/api', shiftsRouter);
 
-// ─── Adaptive Polling ────────────────────────────────────────────────────────
+// ─── Adaptive Polling ─────────────────────────────────────────────────────────
 
-const NORMAL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-const FAST_INTERVAL_MS = 30 * 1000; // 30 seconds after a signup
+const NORMAL_INTERVAL_MS = 5 * 60 * 1000;
+const FAST_INTERVAL_MS = 30 * 1000;
 
 let pollTimer: NodeJS.Timeout | null = null;
 let isScrapingLocked = false;
 
 async function scrapeAndDetectChanges(): Promise<void> {
   if (isScrapingLocked) {
-    console.log('⏳ Scrape already running, skipping this tick');
+    console.log('⏳ Scrape already running, skipping');
     return;
   }
-
   isScrapingLocked = true;
-
   try {
     const previous = getCachedShifts();
     const current = await scrapeShifts();
 
-    // Diff — find shifts that disappeared since last scrape
     const disappeared: { date: string; time: string; description: string }[] =
       [];
     for (const [date, prevShifts] of Object.entries(previous)) {
@@ -44,23 +41,18 @@ async function scrapeAndDetectChanges(): Promise<void> {
         }
       }
     }
-
-    if (disappeared.length > 0) {
-      console.log(
-        `⚠️  ${disappeared.length} shift(s) were taken externally:`,
-        disappeared,
-      );
+    if (disappeared.length > 0 && disappeared.length < 50) {
+      // Only log if it's a plausible number — large numbers = stale cache diff
+      console.log(`⚠️  ${disappeared.length} shift(s) taken externally`);
     }
 
     setCachedShifts(current);
     console.log('🔄 Shift cache updated');
   } catch (err: any) {
     if (err.message === 'SIGNUP_IN_PROGRESS') {
-      console.log(
-        '⏸️  Scrape skipped — signup in progress, will retry at next interval',
-      );
+      console.log('⏸️  Scrape skipped — signup in progress');
     } else {
-      console.error('❌ Failed to scrape shifts:', err);
+      console.error('❌ Scrape failed:', err.message);
     }
   } finally {
     isScrapingLocked = false;
@@ -76,28 +68,40 @@ function schedulePoll(delay: number): void {
 }
 
 export function triggerImmediateRescrape(): void {
-  console.log('⚡ Signup completed — scheduling fast rescrape in 30s');
+  console.log('⚡ Scheduling fast rescrape in 30s');
   schedulePoll(FAST_INTERVAL_MS);
 }
 
-// ─── Startup ──────────────────────────────────────────────────────────────────
+// ─── Startup with retry ───────────────────────────────────────────────────────
 
-async function startScraping(): Promise<void> {
-  await initBrowser();
-  await login();
-  const data = await scrapeShifts();
-  setCachedShifts(data);
-  console.log('✅ Initial shift data scraped and cached');
+async function startWithRetry(retries = 3, delayMs = 5000): Promise<void> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`🔄 Startup attempt ${attempt}/${retries}...`);
+      await initBrowser();
+      await login();
+      const data = await scrapeShifts();
+      setCachedShifts(data);
+      console.log('✅ Initial shift data scraped and cached');
+      return; // Success
+    } catch (err: any) {
+      console.error(`❌ Startup attempt ${attempt} failed:`, err.message);
+      if (attempt < retries) {
+        console.log(`⏳ Retrying in ${delayMs / 1000}s...`);
+        await new Promise((r) => setTimeout(r, delayMs));
+      } else {
+        console.error(
+          '❌ All startup attempts failed. Server will run but shifts unavailable until restart.',
+        );
+      }
+    }
+  }
 }
 
 app.listen(config.PORT, async () => {
   console.log(`🚀 Server running on http://localhost:${config.PORT}`);
-  try {
-    await startScraping();
-    schedulePoll(NORMAL_INTERVAL_MS);
-  } catch (error) {
-    console.error('❌ Error initializing scraper:', error);
-  }
+  await startWithRetry();
+  schedulePoll(NORMAL_INTERVAL_MS);
 });
 
 // ─── DB health check ──────────────────────────────────────────────────────────
@@ -117,6 +121,6 @@ testDb();
 process.on('SIGINT', async () => {
   if (pollTimer) clearTimeout(pollTimer);
   await closeBrowser();
-  console.log('👋 Server shutting down');
+  console.log('👋 Shutting down');
   process.exit();
 });
