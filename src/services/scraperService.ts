@@ -7,8 +7,6 @@ export interface Shift {
 }
 
 export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
-  // Don't scrape while a signup is in progress — it uses a different page
-  // but we still want to avoid a noisy diff right after a signup completes
   if (isSignupInProgress()) {
     console.log('⏸️  Scrape skipped — signup in progress');
     throw new Error('SIGNUP_IN_PROGRESS');
@@ -18,23 +16,13 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
 
   console.log('🔍 Scraping shifts...');
   await page.goto('https://members.foodcoop.com/services/shifts', {
-    waitUntil: 'commit' as any,
+    waitUntil: 'networkidle2',
   });
 
   let shiftsData: Record<string, Shift[]> = {};
 
   while (true) {
     console.log('🔍 Scraping shifts from:', page.url());
-
-    // Wait for shift columns to appear before evaluating
-    try {
-      await page.waitForSelector('.col', { timeout: 15000 });
-    } catch {
-      console.log(
-        '⚠️  No .col elements found on this page — may be redirected to login',
-      );
-      break;
-    }
 
     const pageShifts = await page.evaluate(() => {
       const shiftsByDate: Record<
@@ -71,18 +59,16 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
     }
 
     const nextWeekHref = await page.evaluate(() => {
-      const nextWeekLink = Array.from(document.querySelectorAll('a')).find(
-        (a) => a.textContent?.trim().startsWith('Next Week'),
+      const link = Array.from(document.querySelectorAll('a')).find((a) =>
+        a.textContent?.trim().startsWith('Next Week'),
       );
-      return nextWeekLink
-        ? (nextWeekLink.getAttribute('href') || '').trim()
-        : null;
+      return link ? (link.getAttribute('href') || '').trim() : null;
     });
 
     if (nextWeekHref) {
       console.log(`➡️ Moving to next week: ${nextWeekHref}`);
       await page.goto(`https://members.foodcoop.com${nextWeekHref}`, {
-        waitUntil: 'commit' as any,
+        waitUntil: 'networkidle2',
       });
     } else {
       console.log('✅ No more pages to scrape.');
@@ -92,14 +78,11 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
 
   // Sort dates chronologically
   const sorted: Record<string, Shift[]> = {};
-  const sortedKeys = Object.keys(shiftsData).sort((a, b) => {
-    const parseDate = (d: string) => {
-      const datePart = d.replace(/^[A-Za-z]+\s+/, '');
-      return new Date(datePart).getTime();
-    };
-    return parseDate(a) - parseDate(b);
-  });
-  for (const key of sortedKeys) {
+  for (const key of Object.keys(shiftsData).sort((a, b) => {
+    const parse = (d: string) =>
+      new Date(d.replace(/^[A-Za-z]+\s+/, '')).getTime();
+    return parse(a) - parse(b);
+  })) {
     sorted[key] = shiftsData[key];
   }
 

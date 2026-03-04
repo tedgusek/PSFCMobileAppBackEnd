@@ -9,14 +9,13 @@ export async function initBrowser(): Promise<void> {
   browser = await puppeteer.launch({
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    protocolTimeout: 120000, // ← Fixes "Runtime.callFunctionOn timed out"
+    protocolTimeout: 120000,
     timeout: 60000,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-gpu',
       '--disable-dev-shm-usage',
-      '--disable-extensions',
       '--single-process',
       '--no-zygote',
     ],
@@ -25,22 +24,11 @@ export async function initBrowser(): Promise<void> {
   scrapePage = await browser.newPage();
   signupPage = await browser.newPage();
 
-  // Disable images and CSS on the scrape page — faster loads, less to evaluate
-  await scrapePage.setRequestInterception(true);
-  scrapePage.on('request', (req: any) => {
-    if (['image', 'stylesheet', 'font'].includes(req.resourceType())) {
-      req.abort();
-    } else {
-      req.continue();
-    }
-  });
-
   const UA =
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   await scrapePage.setUserAgent(UA);
   await signupPage.setUserAgent(UA);
 
-  // Set default navigation timeout on both pages
   scrapePage.setDefaultNavigationTimeout(60000);
   signupPage.setDefaultNavigationTimeout(60000);
 
