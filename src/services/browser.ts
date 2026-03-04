@@ -1,16 +1,13 @@
 import puppeteer, { Browser, Page } from 'puppeteer';
 
 let browser: Browser | null = null;
-let scrapePage: Page | null = null;
-let signupPage: Page | null = null;
+let page: Page | null = null;
 let signupInProgress = false;
 
 export async function initBrowser(): Promise<void> {
   browser = await puppeteer.launch({
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    protocolTimeout: 120000,
-    timeout: 60000,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -21,28 +18,26 @@ export async function initBrowser(): Promise<void> {
     ],
   });
 
-  scrapePage = await browser.newPage();
-  signupPage = await browser.newPage();
+  page = await browser.newPage();
 
   const UA =
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-  await scrapePage.setUserAgent(UA);
-  await signupPage.setUserAgent(UA);
+  await page.setUserAgent(UA);
 
-  scrapePage.setDefaultNavigationTimeout(60000);
-  signupPage.setDefaultNavigationTimeout(60000);
-
-  console.log('🌐 Browser initialized with dedicated scrape + signup pages');
+  console.log('🌐 Browser initialized');
 }
 
+export function getPage(): Page {
+  if (!page) throw new Error('Browser not initialized');
+  return page;
+}
+
+// Keep these for signup route compatibility
 export function getScrapePage(): Page {
-  if (!scrapePage) throw new Error('Browser not initialized');
-  return scrapePage;
+  return getPage();
 }
-
 export function getSignupPage(): Page {
-  if (!signupPage) throw new Error('Browser not initialized');
-  return signupPage;
+  return getPage();
 }
 
 export function lockForSignup(): void {
