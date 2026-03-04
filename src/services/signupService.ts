@@ -13,17 +13,14 @@ export async function signUpForShift(
     const signupUrl = `https://members.foodcoop.com${href}`;
     console.log(`🖱️  Navigating signup page to: ${signupUrl}`);
 
-    await page.goto(signupUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 15000,
-    });
+    await page.goto(signupUrl, { waitUntil: 'commit' as any, timeout: 15000 });
 
     // ── Session check ────────────────────────────────────────────────────────
     if (page.url().includes('/login')) {
       console.log('🔐 Signup page session expired — logging in...');
       await loginSignupPage();
       await page.goto(signupUrl, {
-        waitUntil: 'domcontentloaded',
+        waitUntil: 'commit' as any,
         timeout: 15000,
       });
     }

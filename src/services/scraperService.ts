@@ -18,13 +18,23 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
 
   console.log('🔍 Scraping shifts...');
   await page.goto('https://members.foodcoop.com/services/shifts', {
-    waitUntil: 'domcontentloaded',
+    waitUntil: 'commit' as any,
   });
 
   let shiftsData: Record<string, Shift[]> = {};
 
   while (true) {
     console.log('🔍 Scraping shifts from:', page.url());
+
+    // Wait for shift columns to appear before evaluating
+    try {
+      await page.waitForSelector('.col', { timeout: 15000 });
+    } catch {
+      console.log(
+        '⚠️  No .col elements found on this page — may be redirected to login',
+      );
+      break;
+    }
 
     const pageShifts = await page.evaluate(() => {
       const shiftsByDate: Record<
@@ -72,7 +82,7 @@ export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
     if (nextWeekHref) {
       console.log(`➡️ Moving to next week: ${nextWeekHref}`);
       await page.goto(`https://members.foodcoop.com${nextWeekHref}`, {
-        waitUntil: 'domcontentloaded',
+        waitUntil: 'commit' as any,
       });
     } else {
       console.log('✅ No more pages to scrape.');

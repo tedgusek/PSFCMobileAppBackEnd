@@ -4,26 +4,26 @@ import { config } from '../config';
 async function loginOnPage(page: any, label: string): Promise<void> {
   console.log(`🔐 Logging in (${label})...`);
 
-  // Navigate to login page
-  await page.goto('https://members.foodcoop.com/services/login/', {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000,
-  });
-
   if (!config.FOODCOOP_USERNAME || !config.FOODCOOP_PASSWORD) {
     throw new Error('Missing FOODCOOP_USERNAME or FOODCOOP_PASSWORD env vars');
   }
 
-  // Wait for username field and fill credentials
-  await page.waitForSelector('#id_username', { timeout: 10000 });
+  // 'commit' resolves immediately on first byte — avoids all JS evaluation timeouts
+  await page.goto('https://members.foodcoop.com/services/login/', {
+    waitUntil: 'commit' as any,
+    timeout: 30000,
+  });
+
+  // Wait for the actual DOM elements we need before interacting
+  await page.waitForSelector('#id_username', { timeout: 30000 });
+  await page.waitForSelector('#id_password', { timeout: 10000 });
+  await page.waitForSelector('#submit', { timeout: 10000 });
+
   await page.type('#id_username', config.FOODCOOP_USERNAME);
   await page.type('#id_password', config.FOODCOOP_PASSWORD);
-
-  // Click submit — then just wait for URL to change, no evaluate() calls
   await page.click('#submit');
 
-  // Poll URL directly — no page.evaluate(), no waitForNavigation
-  // These are what cause the Runtime.callFunctionOn timeout
+  // Poll URL every second until we leave the login page
   const maxWait = 30000;
   const pollInterval = 1000;
   let elapsed = 0;
@@ -33,7 +33,7 @@ async function loginOnPage(page: any, label: string): Promise<void> {
     elapsed += pollInterval;
 
     const currentUrl = page.url();
-    console.log(`🔗 (${label}) current URL: ${currentUrl}`);
+    console.log(`🔗 (${label}) ${elapsed / 1000}s — url: ${currentUrl}`);
 
     if (!currentUrl.includes('/login')) {
       console.log(`✅ Login successful (${label})`);
