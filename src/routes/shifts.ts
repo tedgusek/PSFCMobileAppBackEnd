@@ -8,8 +8,6 @@ import { triggerImmediateRescrape } from '../server';
 const router = express.Router();
 
 // ─── GET /api/shifts ──────────────────────────────────────────────────────────
-// Returns cached shifts filtered to remove already-claimed ones.
-// href is included so the frontend can pass it back when claiming.
 
 router.get('/shifts', async (_req: any, res: any) => {
   try {
@@ -52,24 +50,28 @@ router.get('/shifts', async (_req: any, res: any) => {
 });
 
 // ─── POST /api/shifts/claim ───────────────────────────────────────────────────
-// 1. Atomically locks the shift in the DB (prevents race conditions)
-// 2. Uses Puppeteer to actually click the signup link on the foodcoop site
-// 3. Confirms or rolls back the claim based on the result
-//
-// Body: { date, time, description, href, username }
+// Body: { date, time, description, href, initials, username }
 
 router.post('/shifts/claim', async (req: any, res: any) => {
-  const { date, time, description, href, username } = req.body;
+  const { date, time, description, href, initials, username } = req.body;
 
-  if (!date || !time || !description || !href || !username) {
+  if (!date || !time || !description || !href || !initials || !username) {
     return res.status(400).json({
-      error: 'Missing required fields: date, time, description, href, username',
+      error:
+        'Missing required fields: date, time, description, href, initials, username',
     });
+  }
+
+  // Validate initials — must be 2-3 letters only
+  if (!/^[A-Za-z]{2,3}$/.test(initials)) {
+    return res
+      .status(400)
+      .json({ error: 'Initials must be 2–3 letters (e.g. "TG" or "TJG").' });
   }
 
   const shiftKey = `${date}|${time}|${description}`;
 
-  // Step 1: Atomically lock — UNIQUE constraint means only first request wins
+  // Step 1: Atomically lock the shift in the DB
   try {
     await db.query(
       `INSERT INTO shift_claims (shift_key, claimed_by, status) VALUES ($1, $2, 'pending')`,
@@ -85,9 +87,9 @@ router.post('/shifts/claim', async (req: any, res: any) => {
     return res.status(500).json({ error: 'Database error. Please try again.' });
   }
 
-  // Step 2: Puppeteer clicks the actual signup link on the foodcoop site
+  // Step 2: Puppeteer fills initials and submits the form
   try {
-    await signUpForShift(href);
+    await signUpForShift(href, initials.toUpperCase());
   } catch (err: any) {
     console.error('❌ Puppeteer signup failed:', err.message);
 
@@ -95,7 +97,7 @@ router.post('/shifts/claim', async (req: any, res: any) => {
       console.log('🔄 Session expired — re-logging in and retrying...');
       try {
         await login();
-        await signUpForShift(href);
+        await signUpForShift(href, initials.toUpperCase());
       } catch (retryErr: any) {
         console.error('❌ Retry after re-login also failed:', retryErr.message);
         await db.query(`DELETE FROM shift_claims WHERE shift_key = $1`, [
@@ -106,7 +108,6 @@ router.post('/shifts/claim', async (req: any, res: any) => {
           .json({ error: 'Signup failed after re-login. Please try again.' });
       }
     } else {
-      // Roll back so the shift remains available for others
       await db.query(`DELETE FROM shift_claims WHERE shift_key = $1`, [
         shiftKey,
       ]);
@@ -117,7 +118,7 @@ router.post('/shifts/claim', async (req: any, res: any) => {
     }
   }
 
-  // Step 3: Mark confirmed in DB
+  // Step 3: Confirm in DB
   try {
     await db.query(
       `UPDATE shift_claims SET status = 'confirmed' WHERE shift_key = $1`,
@@ -130,7 +131,7 @@ router.post('/shifts/claim', async (req: any, res: any) => {
     );
   }
 
-  // Step 4: Fast rescrape so cache reflects the taken shift
+  // Step 4: Fast rescrape
   triggerImmediateRescrape();
 
   console.log(`✅ Shift signed up: ${shiftKey} by ${username}`);
