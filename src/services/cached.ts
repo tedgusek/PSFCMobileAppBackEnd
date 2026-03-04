@@ -1,11 +1,11 @@
-// cache.ts
-let cachedShiftsData: Record<string, { time: string; description: string }[]> =
-  {};
+import { Shift } from './scraperService';
 
-export function getCachedShifts() {
+let cachedShiftsData: Record<string, Shift[]> = {};
+
+export function getCachedShifts(): Record<string, Shift[]> {
   return cachedShiftsData;
 }
 
-export function setCachedShifts(data: typeof cachedShiftsData) {
+export function setCachedShifts(data: Record<string, Shift[]>): void {
   cachedShiftsData = data;
 }

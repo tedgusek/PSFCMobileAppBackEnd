@@ -1,30 +1,12 @@
-import fs from 'fs';
 import { getPage } from './browser';
-import { config } from '../config';
 
-// export async function login() {
-//   const page = getPage();
-//   if (!page) throw new Error('Browser not initialized');
+export interface Shift {
+  time: string;
+  description: string;
+  href: string; // The relative URL of the shift link e.g. "/services/shifts/signup/?id=12345"
+}
 
-//   console.log('🔐 Logging in...');
-//   await page.goto('https://members.foodcoop.com/services/login/', {
-//     waitUntil: 'networkidle2',
-//   });
-
-//   if (!config.FOODCOOP_USERNAME || !config.FOODCOOP_PASSWORD)
-//     throw new Error('❌ Missing credentials');
-
-//   await page.type('#id_username', config.FOODCOOP_USERNAME);
-//   await page.type('#id_password', config.FOODCOOP_PASSWORD);
-//   await Promise.all([page.click('#submit'), page.waitForNavigation()]);
-
-//   const cookies = await page.cookies();
-//   fs.writeFileSync(config.SESSION_FILE, JSON.stringify(cookies));
-//   console.log('✅ Login successful & session saved');
-//   // scrapeShifts();
-// }
-
-export async function scrapeShifts() {
+export async function scrapeShifts(): Promise<Record<string, Shift[]>> {
   const page = getPage();
   if (!page) throw new Error('Browser not initialized');
 
@@ -33,16 +15,15 @@ export async function scrapeShifts() {
     waitUntil: 'domcontentloaded',
   });
 
-  let shiftsData: Record<string, { time: string; description: string }[]> = {}; // Store shifts by date
+  let shiftsData: Record<string, Shift[]> = {};
 
   while (true) {
     console.log('🔍 Scraping shifts from:', page.url());
 
-    // Extract shifts grouped by date
     const pageShifts = await page.evaluate(() => {
       const shiftsByDate: Record<
         string,
-        { time: string; description: string }[]
+        { time: string; description: string; href: string }[]
       > = {};
 
       document.querySelectorAll('.col').forEach((col) => {
@@ -56,7 +37,8 @@ export async function scrapeShifts() {
               shift.textContent
                 ?.replace(shift.querySelector('b')?.textContent || '', '')
                 .trim() || 'Unknown',
-          })
+            href: shift.getAttribute('href') || '', // ← Capture the signup link
+          }),
         );
 
         if (shifts.length > 0) {
@@ -67,18 +49,14 @@ export async function scrapeShifts() {
       return shiftsByDate;
     });
 
-    // Merge page shifts into main shiftsData
     for (const [date, shifts] of Object.entries(pageShifts)) {
-      if (!shiftsData[date]) {
-        shiftsData[date] = [];
-      }
+      if (!shiftsData[date]) shiftsData[date] = [];
       shiftsData[date].push(...shifts);
     }
 
-    // Check if there's a "Next Week" link
     const nextWeekHref = await page.evaluate(() => {
       const nextWeekLink = Array.from(document.querySelectorAll('a')).find(
-        (a) => a.textContent?.trim().startsWith('Next Week')
+        (a) => a.textContent?.trim().startsWith('Next Week'),
       );
       return nextWeekLink ? nextWeekLink.getAttribute('href') : null;
     });
@@ -94,6 +72,5 @@ export async function scrapeShifts() {
     }
   }
 
-  // console.log('✅ All shifts scraped:', shiftsData);
   return shiftsData;
 }

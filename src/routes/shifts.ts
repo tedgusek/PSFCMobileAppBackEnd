@@ -1,12 +1,15 @@
 import express from 'express';
 import { getCachedShifts } from '../services/cached';
 import { db } from '../db';
+import { signUpForShift } from '../services/signupService';
+import { login } from '../services/login';
 import { triggerImmediateRescrape } from '../server';
 
 const router = express.Router();
 
 // ─── GET /api/shifts ──────────────────────────────────────────────────────────
-// Returns the cached shift list, filtered to remove any already-claimed shifts.
+// Returns cached shifts filtered to remove already-claimed ones.
+// href is included so the frontend can pass it back when claiming.
 
 router.get('/shifts', async (_req: any, res: any) => {
   try {
@@ -20,7 +23,6 @@ router.get('/shifts', async (_req: any, res: any) => {
         });
     }
 
-    // Filter out shifts that have already been claimed via this app
     const claimedResult = await db.query(
       `SELECT shift_key FROM shift_claims WHERE status = 'confirmed'`,
     );
@@ -28,8 +30,10 @@ router.get('/shifts', async (_req: any, res: any) => {
       claimedResult.rows.map((r: any) => r.shift_key),
     );
 
-    const filtered: Record<string, { time: string; description: string }[]> =
-      {};
+    const filtered: Record<
+      string,
+      { time: string; description: string; href: string }[]
+    > = {};
 
     for (const [date, shifts] of Object.entries(data)) {
       const available = shifts.filter(
@@ -48,31 +52,30 @@ router.get('/shifts', async (_req: any, res: any) => {
 });
 
 // ─── POST /api/shifts/claim ───────────────────────────────────────────────────
-// Atomically claims a shift for a user.
-// Body: { date: string, time: string, description: string, username: string }
+// 1. Atomically locks the shift in the DB (prevents race conditions)
+// 2. Uses Puppeteer to actually click the signup link on the foodcoop site
+// 3. Confirms or rolls back the claim based on the result
+//
+// Body: { date, time, description, href, username }
 
 router.post('/shifts/claim', async (req: any, res: any) => {
-  const { date, time, description, username } = req.body;
+  const { date, time, description, href, username } = req.body;
 
-  if (!date || !time || !description || !username) {
-    return res
-      .status(400)
-      .json({
-        error: 'Missing required fields: date, time, description, username',
-      });
+  if (!date || !time || !description || !href || !username) {
+    return res.status(400).json({
+      error: 'Missing required fields: date, time, description, href, username',
+    });
   }
 
   const shiftKey = `${date}|${time}|${description}`;
 
-  // Step 1 — Try to atomically insert the claim.
-  // The UNIQUE constraint on shift_key means only one user can succeed.
+  // Step 1: Atomically lock — UNIQUE constraint means only first request wins
   try {
     await db.query(
       `INSERT INTO shift_claims (shift_key, claimed_by, status) VALUES ($1, $2, 'pending')`,
       [shiftKey, username],
     );
   } catch (err: any) {
-    // Postgres unique violation error code = 23505
     if (err.code === '23505') {
       return res
         .status(409)
@@ -82,31 +85,56 @@ router.post('/shifts/claim', async (req: any, res: any) => {
     return res.status(500).json({ error: 'Database error. Please try again.' });
   }
 
-  // Step 2 — Trigger a fast rescrape so the cache reflects this change quickly
-  triggerImmediateRescrape();
+  // Step 2: Puppeteer clicks the actual signup link on the foodcoop site
+  try {
+    await signUpForShift(href);
+  } catch (err: any) {
+    console.error('❌ Puppeteer signup failed:', err.message);
 
-  // Step 3 — TODO: Add Puppeteer-based signup submission here when ready.
-  // For now we confirm the claim optimistically.
-  // When you implement the actual Puppeteer signup:
-  //   - On success: UPDATE shift_claims SET status='confirmed' WHERE shift_key=$1
-  //   - On failure: DELETE FROM shift_claims WHERE shift_key=$1, then return 500
+    if (err.message === 'SESSION_EXPIRED') {
+      console.log('🔄 Session expired — re-logging in and retrying...');
+      try {
+        await login();
+        await signUpForShift(href);
+      } catch (retryErr: any) {
+        console.error('❌ Retry after re-login also failed:', retryErr.message);
+        await db.query(`DELETE FROM shift_claims WHERE shift_key = $1`, [
+          shiftKey,
+        ]);
+        return res
+          .status(500)
+          .json({ error: 'Signup failed after re-login. Please try again.' });
+      }
+    } else {
+      // Roll back so the shift remains available for others
+      await db.query(`DELETE FROM shift_claims WHERE shift_key = $1`, [
+        shiftKey,
+      ]);
+      return res.status(500).json({
+        error:
+          'Could not complete signup on the foodcoop site. Please try again.',
+      });
+    }
+  }
 
+  // Step 3: Mark confirmed in DB
   try {
     await db.query(
       `UPDATE shift_claims SET status = 'confirmed' WHERE shift_key = $1`,
       [shiftKey],
     );
   } catch (err) {
-    console.error('❌ Failed to confirm claim:', err);
-    // Roll back the claim so another user can try
-    await db.query(`DELETE FROM shift_claims WHERE shift_key = $1`, [shiftKey]);
-    return res
-      .status(500)
-      .json({ error: 'Failed to confirm signup. Please try again.' });
+    console.error(
+      '❌ Failed to confirm claim in DB (signup still occurred):',
+      err,
+    );
   }
 
-  console.log(`✅ Shift claimed: ${shiftKey} by ${username}`);
-  res.json({ success: true, message: 'Shift successfully claimed!' });
+  // Step 4: Fast rescrape so cache reflects the taken shift
+  triggerImmediateRescrape();
+
+  console.log(`✅ Shift signed up: ${shiftKey} by ${username}`);
+  res.json({ success: true, message: 'You are signed up for this shift!' });
 });
 
 export const shiftsRouter = router;
