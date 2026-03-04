@@ -1,21 +1,12 @@
 import { getSignupPage, lockForSignup, releaseSignupLock } from './browser';
+import { loginSignupPage } from './login';
 import { config } from '../config';
 
-/**
- * Navigates the dedicated signup page to the shift URL, fills all 3 initials
- * fields, waits for them to be populated, then clicks "Work this shift".
- *
- * Uses a separate Puppeteer page from the scraper so the two never conflict.
- * Acquires a mutex lock for the duration so the scraper doesn't fire a diff
- * immediately after and produce false positives.
- */
 export async function signUpForShift(
   href: string,
   initials: string,
 ): Promise<void> {
   const page = getSignupPage();
-
-  // Acquire lock — scraper will skip its next tick if this is held
   lockForSignup();
 
   try {
@@ -27,109 +18,104 @@ export async function signUpForShift(
       timeout: 15000,
     });
 
-    // ── Session check ───────────────────────────────────────────────────────
+    // ── Session check ────────────────────────────────────────────────────────
     if (page.url().includes('/login')) {
-      // The signup page needs its own session — copy cookies from scrape page
-      // by re-logging in on this page
-      console.log(
-        '🔐 Signup page session expired — logging in on signup page...',
-      );
-      await loginOnPage(page);
+      console.log('🔐 Signup page session expired — logging in...');
+      await loginSignupPage();
       await page.goto(signupUrl, {
         waitUntil: 'domcontentloaded',
         timeout: 15000,
       });
     }
 
-    // ── Wait for form ───────────────────────────────────────────────────────
+    // ── Wait for form ────────────────────────────────────────────────────────
     await page.waitForSelector('form.mainform', { timeout: 10000 });
     console.log('📋 Signup form found');
 
-    // ── Fill each initials field, one at a time, with verification ──────────
-    const fields = ['initials1', 'initials2', 'initials4'];
-
-    for (const fieldName of fields) {
+    // ── Fill each initials field with verification ───────────────────────────
+    for (const fieldName of ['initials1', 'initials2', 'initials4']) {
       const selector = `input[name="${fieldName}"]`;
-
-      // Wait for the field to be present and visible
       await page.waitForSelector(selector, { visible: true, timeout: 5000 });
-
-      // Triple-click to select any existing content, then type
       await page.click(selector, { clickCount: 3 });
-      await page.type(selector, initials, { delay: 50 }); // Small delay between keystrokes
+      await page.type(selector, initials, { delay: 50 });
 
-      // Verify the value was actually set
-      const value = await page.$eval(
-        selector,
-        (el) => (el as HTMLInputElement).value,
-      );
+      const value = await page.$eval(selector, (el: any) => el.value);
       if (value !== initials) {
         throw new Error(
-          `Failed to set ${fieldName} — expected "${initials}", got "${value}"`,
+          `Failed to set ${fieldName} — got "${value}" instead of "${initials}"`,
         );
       }
-
       console.log(`✏️  Verified ${fieldName} = "${value}"`);
     }
 
-    // ── Small pause to let any JS validation on the form settle ────────────
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // ── Small pause for any JS form validation to settle ────────────────────
+    await new Promise((r) => setTimeout(r, 500));
 
-    // ── Click submit ────────────────────────────────────────────────────────
-    const submitSelector = 'input[name="claim"]';
-    await page.waitForSelector(submitSelector, {
+    // ── Click submit ─────────────────────────────────────────────────────────
+    await page.waitForSelector('input[name="claim"]', {
       visible: true,
       timeout: 5000,
     });
+    console.log('🖱️  Clicking "Work this shift"...');
+    await page.click('input[name="claim"]');
 
-    // Wait for navigation triggered by form submission
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
-      page.click(submitSelector),
-    ]);
+    // ── Poll for result instead of waitForNavigation ─────────────────────────
+    // Same approach as login — poll until URL changes or success indicator appears
+    const maxWait = 15000;
+    const interval = 500;
+    let elapsed = 0;
+    const startUrl = page.url();
 
-    console.log('🖱️  Clicked "Work this shift" — navigated to result page');
+    while (elapsed < maxWait) {
+      await new Promise((r) => setTimeout(r, interval));
+      elapsed += interval;
 
-    // ── Check result page for failure indicators ────────────────────────────
-    const pageText = await page.evaluate(() =>
-      document.body.innerText.toLowerCase(),
-    );
+      const currentUrl = page.url();
+      const pageText = await page.evaluate(() =>
+        document.body.innerText.toLowerCase(),
+      );
 
-    const failureKeywords = [
-      'error',
-      'already signed up',
-      'unavailable',
-      'full',
-      'invalid',
-    ];
-    for (const keyword of failureKeywords) {
-      if (pageText.includes(keyword)) {
-        await page.screenshot({ path: '/tmp/signup-result.png' });
-        throw new Error(`Signup may have failed — page contains: "${keyword}"`);
+      // Success — URL changed away from the claim page
+      if (currentUrl !== startUrl) {
+        console.log(`✅ Navigated to result page: ${currentUrl}`);
+
+        const failureKeywords = [
+          'error',
+          'already signed up',
+          'unavailable',
+          'full',
+          'invalid',
+        ];
+        for (const keyword of failureKeywords) {
+          if (pageText.includes(keyword)) {
+            await page.screenshot({ path: '/tmp/signup-result.png' });
+            throw new Error(
+              `Signup may have failed — page contains: "${keyword}"`,
+            );
+          }
+        }
+
+        console.log('✅ Shift signup completed successfully');
+        return;
+      }
+
+      // Still on same page — check for inline error messages
+      const inlineError = await page.evaluate(() => {
+        const el = document.querySelector('.error, .alert, .errorlist');
+        return el ? el.textContent?.trim() : null;
+      });
+
+      if (inlineError) {
+        throw new Error(`Signup form error: "${inlineError}"`);
       }
     }
 
-    console.log('✅ Shift signup completed successfully');
+    // If we get here, URL never changed — take a screenshot to diagnose
+    await page.screenshot({ path: '/tmp/signup-timeout.png' });
+    throw new Error(
+      'Signup timed out — form submitted but page did not navigate',
+    );
   } finally {
-    // Always release the lock, even if signup threw
     releaseSignupLock();
   }
-}
-
-/**
- * Logs in on a specific page instance (used for the signup page's own session).
- */
-async function loginOnPage(page: any): Promise<void> {
-  await page.goto('https://members.foodcoop.com/services/login/', {
-    waitUntil: 'networkidle2',
-  });
-
-  if (!config.FOODCOOP_USERNAME || !config.FOODCOOP_PASSWORD) {
-    throw new Error('Missing credentials');
-  }
-
-  await page.type('#id_username', config.FOODCOOP_USERNAME);
-  await page.type('#id_password', config.FOODCOOP_PASSWORD);
-  await Promise.all([page.click('#submit'), page.waitForNavigation()]);
-  console.log('✅ Signup page logged in');
 }
